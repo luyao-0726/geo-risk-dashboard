@@ -1,0 +1,140 @@
+/**
+ * Cloudflare Pages Function — /api/ask
+ * 接收用户问题，结合风险事件数据调用 DeepSeek API 作答。
+ * API Key 通过环境变量 DEEPSEEK_API_KEY 注入（context.env），绝不暴露到前端。
+ *
+ * 说明：Cloudflare Workers 运行时没有文件系统（无 fs 模块），
+ * 因此将 CSV 数据以内嵌字符串形式存放于此。
+ */
+
+const CSV_DATA = `news_id,发布日期,国家,风险类型,标题,正文摘要,来源
+NEWS016,2026-5-7,印度,政策突变,印度将成熟制程芯片纳入本土制造激励计划,印度电子和信息技术部将成熟制程芯片纳入生产挂钩激励计划，同时提高整机进口壁垒，倒逼供应链本地化。,铸币报
+NEWS001,2026-1-8,美国,政策突变,美国商务部拟将更多成熟制程芯片纳入出口管制,美国商务部发布新规草案，拟对28纳米及以下部分成熟制程设备和材料扩大对华出口限制，多家中国晶圆厂扩产计划受影响。,路透社
+NEWS014,2026-4-16,美国,沉没成本,某中资企业宣布减记美国封测工厂投资,受关税和政府采购禁令影响，某中资企业宣布对其美国封装测试厂计提减值损失约2.3亿美元，考虑整体出售。,财新
+NEWS926,2026-3-4,美国,政社夹击,美国工会与议员施压重审中资半导体并购案,美国劳工团体联合多名议员致信CFIUS， 要求重新审查一起已获批的中资功率器件企业并购案。,华尔街日报
+NEWS019,2026-5-28,马来西亚,准入受阻,马来西亚收紧槟城封测园区外劳配额,马来西亚收紧槟城州电子制造业外籍劳工配额审批，多家封测厂扩产计划的人力缺口扩大。,星报
+NEWS018,2026-5-21,欧盟,政社夹击,欧洲议会决议呼吁审查中企参与的芯片项目,欧洲议会通过不具约束力决议， 呼吁成员国审查中国企业参与的半导体制造与研发合作项目。,政客欧洲版
+NEWS011,2026-3-26,菲律宾,政社夹击,菲律宾社区抗议半导体园区取水计划,菲律宾某封测园区因大规模取水计划遭当地社区持续抗议，环保组织已提起行政诉讼。,马尼拉公报
+NEWS024,2026-7-2,肯尼亚,政社夹击,肯尼亚社区因征地纠纷阻断数据中心配套施工,肯尼亚某数据中心及电子组装配套项目因征地补偿纠纷遭沿线社区阻工，已中断三周。,民族日报
+NEWS004,2026-2-3,缅甸,政局失稳,缅甸边境冲突致电子元器件陆运通道中断,缅北武装冲突扩大，经缅甸中转的电子元器件陆运通道中断，区域供应链被迫改道海运，交期延长三周。,新华社
+NEWS927,2026-6-4,美国,政策突变,美国对东南亚转口芯片启动原产地调查,美国海关对经越南、马来西亚转口的芯片产品启动原产地调查，或追溯征收反规避关税。,路透社
+NEWS023,2026-6-25,日本,政策突变,日本扩大半导体材料出口管理清单,日本经济产业省将更多光刻胶与特种气体品类纳入出口管理清单， 中国下游厂商备货周期拉长。,日经新闻
+NEWS021,2026-6-11,阿根廷,沉没成本,阿根廷比索贬值致电子制造项目投资缩水,阿根廷货币大幅贬值，某外资参与的电子制造项目美元计价回报大幅缩水，股东考虑退出。,布宜诺斯艾利斯先驱报
+NEWS017,2026-5-14,尼日利亚,政局失稳,尼日利亚大选临近引发外资数字基建观望,尼日利亚大选前政策不确定性上升，多个数据中心与电子组装项目融资方要求增加政治风险保险条款。,非洲商业内幕
+NEWS007,2026-2-25,印度尼西亚,政策突变,印尼突然上调半导体设备进口增值税,印尼财政部发布条例，对半导体制造和封测设备进口增值税从11%上调至15%，即日生效。,雅加达邮报
+NEWS006,2026-2-18,墨西哥,准入受阻,墨西哥暂停发放新电子制造园区外资准入许可,墨西哥经济部宣布暂停发放新的电子制造园区外资准入许可，等待新的近岸外包审查框架出台。,金融时报
+NEWS012,2026-4-2,荷兰,政策突变,荷兰进一步收紧先进光刻机维保服务许可,荷兰政府宣布扩大出口管制范围，已售光刻设备的部分维保和备件服务对华需逐案申请许可证。,彭博社
+NEWS015,2026-4-23,沙特阿拉伯,准入受阻,沙特要求半导体供应商满足本地化率新规,沙特新规要求政府相关项目电子元器件供应商本地化率不低于40%，外资厂商面临合规压力。,阿拉伯新闻
+NEWS009,2026-3-12,埃及,政局失稳,埃及货币危机致电子组装项目付款拖欠,埃及外汇储备紧张，某电子组装园区项目业主方已拖欠设备款六个月，半导体设备供应商被迫暂停发货。,中东经济文摘
+NEWS003,2026-1-22,印度,政社夹击,印度本土厂商联合请愿要求提高芯片进口关税,印度五家本土半导体厂商向政府联合请愿， 要求提高成熟制程芯片进口关税， 并发起反倾销调查申请。,经济时报
+NEWS010,2026-3-19,巴西,准入受阻,巴西对中国芯片厂商产品认证启动复审,巴西国家电信局宣布对三家中国芯片厂商的产品认证启动复审，理由是检测报告存在程序瑕疵。,环球报
+NEWS025,2026-7-9,英国,准入受阻,英国以国家安全为由否决一起芯片设计公司收购案,英国政府依据《国家安全与投资法》否决一起涉及芯片设计初创公司的外资收购案。,金融时报
+NEWS022,2026-6-18,巴基斯坦,政局失稳,巴基斯坦安全局势推高电子产业园安保成本,巴基斯坦西北部安全事件频发，某中资参与的电子产业园安保成本上升，工期预计延长一年。,黎明报
+NEWS002,2026-1-15,越南,准入受阻,越南推迟审批中资封测工厂建设许可,越南工贸部以环评补充材料为由，第三次推迟某中资芯片封装测试工厂的建设许可审批，项目已停滞八个月。,越南快讯
+NEWS005,2026-2-11,德国,政策突变,德国将晶圆厂列为关键基础设施加强外资审查,德国内政部将半导体制造设施纳入关键基础设施保护名录，外资参股相关项目须接受额外安全审查。,明镜周刊
+NEWS013,2026-4-9,泰国,政局失稳,泰国政局动荡拖累东部经济走廊电子产业招标,泰国联合政府解散重组， 东部经济走廊多个电子与半导体产业配套项目招标无限期推迟。,曼谷邮报`;
+
+const CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type',
+};
+
+/**
+ * 处理 POST 请求
+ */
+export async function onRequestPost(context) {
+  const { request, env } = context;
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: '请求格式错误' }, 400);
+  }
+
+  const question = (body && body.question || '').trim();
+  if (!question) {
+    return json({ error: '请输入问题' }, 400);
+  }
+
+  const apiKey = env.DEEPSEEK_API_KEY;
+  if (!apiKey) {
+    return json({ error: '服务端未配置 DEEPSEEK_API_KEY 环境变量' }, 500);
+  }
+
+  try {
+    const answer = await callDeepSeek(apiKey, question);
+    return json({ answer }, 200);
+  } catch (e) {
+    return json({ error: e.message || 'AI 服务调用失败' }, 500);
+  }
+}
+
+/**
+ * 处理 CORS 预检请求
+ */
+export async function onRequestOptions() {
+  return new Response(null, { status: 204, headers: CORS_HEADERS });
+}
+
+/**
+ * 返回 JSON 响应
+ */
+function json(obj, status) {
+  return new Response(JSON.stringify(obj), {
+    status,
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      ...CORS_HEADERS,
+    },
+  });
+}
+
+/**
+ * 调用 DeepSeek Chat API
+ */
+async function callDeepSeek(apiKey, question) {
+  const systemPrompt = [
+    '你是一位资深企业地缘风险分析师。请严格根据以下 CSV 数据集的内容回答用户的问题。',
+    '不要编造或推测数据中不存在的信息。如果数据不足以回答问题，请明确说明。',
+    '回答时请引用具体的事件ID（news_id）、日期、国家和风险类型作为依据。',
+    '用中文回答，条理清晰，必要时使用分点列举。',
+    '',
+    'CSV 数据集（企业地缘风险事件库）：',
+    CSV_DATA
+  ].join('\n');
+
+  const resp = await fetch('https://api.deepseek.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: 'deepseek-chat',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: question }
+      ],
+      temperature: 0.3,
+      max_tokens: 2000
+    })
+  });
+
+  if (!resp.ok) {
+    const errText = await resp.text();
+    let msg = `DeepSeek API 错误 (HTTP ${resp.status})`;
+    try {
+      const j = JSON.parse(errText);
+      if (j.error && j.error.message) msg = j.error.message;
+    } catch { /* 忽略解析错误，使用默认提示 */ }
+    throw new Error(msg);
+  }
+
+  const data = await resp.json();
+  if (data.choices && data.choices[0] && data.choices[0].message) {
+    return data.choices[0].message.content;
+  }
+  throw new Error('API 返回格式异常');
+}
